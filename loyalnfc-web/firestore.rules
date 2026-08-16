@@ -1,0 +1,9 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Placeholder: deny-all by default until explicit security rules are implemented per phase
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
