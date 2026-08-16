@@ -8,6 +8,7 @@ import { SuperAdminDashboard } from "./pages/SuperAdminDashboard";
 import { BusinessAdminDashboard } from "./pages/BusinessAdminDashboard";
 import { CustomerDashboard } from "./pages/CustomerDashboard";
 import { Unauthorized } from "./pages/Unauthorized";
+import { NfcTapPage } from "./pages/NfcTapPage";
 import { Loader2 } from "lucide-react";
 
 const RootRedirect: React.FC = () => {
@@ -37,7 +38,8 @@ export function App() {
     <AuthProvider>
       <BrowserRouter>
         <Routes>
-          {/* Public Authentication Pages */}
+          {/* Public Authentication & Tap Pages */}
+          <Route path="/t/:token" element={<NfcTapPage />} />
           <Route path="/login" element={<StaffLogin />} />
           <Route path="/staff-login" element={<StaffLogin />} />
           <Route path="/customer-login" element={<CustomerLogin />} />

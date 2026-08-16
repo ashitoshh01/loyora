@@ -537,14 +537,362 @@ export const replaceCard = onCall(async (request) => {
 });
 
 /**
- * Placeholder Cloud Function for Flow B - Merchant PIN visit recording.
+ * Helper to compute YYYY-MM-DD date key in configured timezone (default: Asia/Kolkata).
+ */
+function getTodayDateKey(timezoneStr: string = "Asia/Kolkata"): string {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezoneStr,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    return formatter.format(new Date());
+  } catch (_err) {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    return formatter.format(new Date());
+  }
+}
+
+/**
+ * Modular visit verification logic.
+ * Structured so verification (Flow B: Merchant PIN) can later be swapped for
+ * alternative verification flows (e.g. merchant dashboard websocket, dynamic OTP)
+ * without altering the Visit schema or visit recording logic.
+ */
+async function verifyVisitAuthorization(
+  businessData: any,
+  verificationData: { method: "merchant_pin"; pin?: string }
+): Promise<boolean> {
+  if (verificationData.method === "merchant_pin") {
+    if (!verificationData.pin) return false;
+    const inputPinHash = hashMerchantPin(verificationData.pin);
+    return inputPinHash === businessData.merchantPinHash;
+  }
+  return false;
+}
+
+/**
+ * Public Cloud Function: resolveCardToken(token)
+ * Unauthenticated callable function for NFC tap resolution.
+ * Returns ONLY minimal information required to render tap UI:
+ * - businessName
+ * - customerFirstName
+ * - totalVisits
+ * - tierLevel
+ * - alreadyVisitedToday
+ * Does NOT expose raw token, phone numbers, or other customer data.
+ */
+export const resolveCardToken = onCall(async (request) => {
+  const token = request.data?.token;
+  if (!token || typeof token !== "string") {
+    throw new HttpsError("invalid-argument", "Token string is required.");
+  }
+
+  const cleanToken = token.trim();
+
+  // 1. Lookup Card by token across collection group
+  const cardSnap = await db
+    .collectionGroup("nfc_cards")
+    .where("token", "==", cleanToken)
+    .limit(1)
+    .get();
+
+  if (cardSnap.empty) {
+    return {
+      status: "invalid_card",
+      message: "This NFC card token is invalid or unrecognized.",
+    };
+  }
+
+  const cardDoc = cardSnap.docs[0];
+  const cardData = cardDoc.data();
+  const { businessId, customerId, status: cardStatus } = cardData;
+
+  if (cardStatus !== "active") {
+    return {
+      status: "card_blocked",
+      cardStatus,
+      message: `This NFC card status is currently ${cardStatus}.`,
+    };
+  }
+
+  if (!customerId) {
+    return {
+      status: "unassigned_card",
+      message: "This NFC card has not been assigned to a customer yet.",
+    };
+  }
+
+  // 2. Fetch Business Document
+  const bizSnap = await db.collection("businesses").doc(businessId).get();
+  if (!bizSnap.exists) {
+    return {
+      status: "business_not_found",
+      message: "Associated business tenant was not found.",
+    };
+  }
+
+  const bizData = bizSnap.data() || {};
+  if (bizData.status === "suspended") {
+    return {
+      status: "business_suspended",
+      message: "This merchant account is currently suspended.",
+    };
+  }
+
+  // 3. Fetch Customer Document
+  const customerSnap = await db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("customers")
+    .doc(customerId)
+    .get();
+
+  if (!customerSnap.exists) {
+    return {
+      status: "customer_not_found",
+      message: "Associated customer profile not found.",
+    };
+  }
+
+  const customerData = customerSnap.data() || {};
+
+  // 4. Fetch Membership Document
+  const memSnap = await db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("memberships")
+    .doc(customerId)
+    .get();
+
+  const memData = memSnap.data() || {};
+
+  if (memData.status === "cancelled") {
+    return {
+      status: "membership_cancelled",
+      message: "Customer membership pass has been deactivated.",
+    };
+  }
+
+  // Check Expiry
+  if (memData.expiresAt) {
+    const expiresAt = memData.expiresAt.toDate
+      ? memData.expiresAt.toDate()
+      : new Date(memData.expiresAt);
+    if (expiresAt < new Date()) {
+      return {
+        status: "membership_expired",
+        message: "Customer membership pass has expired.",
+      };
+    }
+  }
+
+  // 5. Check if visit already recorded today in business timezone
+  const timezone = bizData.timezone || "Asia/Kolkata";
+  const todayDateKey = getTodayDateKey(timezone);
+
+  const visitsSnap = await db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("visits")
+    .where("customerId", "==", customerId)
+    .where("dateKey", "==", todayDateKey)
+    .limit(1)
+    .get();
+
+  const alreadyVisitedToday = !visitsSnap.empty;
+  const fullName = customerData.fullName || "Valued Customer";
+  const customerFirstName = fullName.split(" ")[0];
+
+  return {
+    status: "valid",
+    businessName: bizData.name || "Merchant Partner",
+    customerFirstName,
+    totalVisits: memData.totalVisits || 0,
+    tierLevel: memData.tierLevel || "Bronze",
+    alreadyVisitedToday,
+  };
+});
+
+/**
+ * Public Cloud Function: recordVisit(token, businessPin)
+ * Server-side execution only:
+ * - Verifies businessPin hash against stored merchantPinHash.
+ * - Enforces max 1 visit per customer per business per calendar day in configured timezone.
+ * - Creates Visit document and increments Membership.totalVisits.
+ * - Same-day duplicate taps return "already_visited" status without duplicating counts.
  */
 export const recordVisit = onCall(async (request) => {
-  if (!request.auth) {
+  const data = request.data || {};
+  const { token, businessPin } = data;
+
+  if (!token || typeof token !== "string") {
+    throw new HttpsError("invalid-argument", "token is required.");
+  }
+  if (!businessPin || typeof businessPin !== "string") {
+    throw new HttpsError("invalid-argument", "businessPin is required.");
+  }
+
+  const cleanToken = token.trim();
+
+  // 1. Lookup Card
+  const cardSnap = await db
+    .collectionGroup("nfc_cards")
+    .where("token", "==", cleanToken)
+    .limit(1)
+    .get();
+
+  if (cardSnap.empty) {
+    throw new HttpsError("not-found", "Invalid NFC card token.");
+  }
+
+  const cardDoc = cardSnap.docs[0];
+  const cardData = cardDoc.data();
+  const { cardId, businessId, customerId, status: cardStatus } = cardData;
+
+  if (cardStatus !== "active") {
     throw new HttpsError(
-      "unauthenticated",
-      "User must be authenticated to record a visit."
+      "failed-precondition",
+      `NFC card status is currently ${cardStatus}.`
     );
   }
-  return { success: false, message: "Not implemented yet" };
+
+  if (!customerId) {
+    throw new HttpsError(
+      "failed-precondition",
+      "NFC card is not assigned to a customer."
+    );
+  }
+
+  // 2. Fetch Business & Verify PIN via modular verification helper
+  const bizRef = db.collection("businesses").doc(businessId);
+  const bizSnap = await bizRef.get();
+  if (!bizSnap.exists) {
+    throw new HttpsError("not-found", "Associated business tenant not found.");
+  }
+
+  const bizData = bizSnap.data() || {};
+  if (bizData.status === "suspended") {
+    throw new HttpsError("permission-denied", "Business account is suspended.");
+  }
+
+  const isVerified = await verifyVisitAuthorization(bizData, {
+    method: "merchant_pin",
+    pin: businessPin.trim(),
+  });
+
+  if (!isVerified) {
+    throw new HttpsError("permission-denied", "Incorrect Merchant PIN.");
+  }
+
+  // 3. Fetch Customer & Membership
+  const customerSnap = await db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("customers")
+    .doc(customerId)
+    .get();
+
+  const customerData = customerSnap.data() || {};
+  const customerFirstName = (customerData.fullName || "Customer").split(" ")[0];
+
+  const memRef = db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("memberships")
+    .doc(customerId);
+
+  const memSnap = await memRef.get();
+  if (!memSnap.exists) {
+    throw new HttpsError(
+      "not-found",
+      "Customer membership record not found."
+    );
+  }
+
+  const memData = memSnap.data() || {};
+  if (memData.status === "cancelled") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Customer membership is deactivated."
+    );
+  }
+
+  if (memData.expiresAt) {
+    const expiresAt = memData.expiresAt.toDate
+      ? memData.expiresAt.toDate()
+      : new Date(memData.expiresAt);
+    if (expiresAt < new Date()) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Customer membership pass has expired."
+      );
+    }
+  }
+
+  // 4. Calendar Day Same-Day Visit Enforcement
+  const timezone = bizData.timezone || "Asia/Kolkata";
+  const todayDateKey = getTodayDateKey(timezone);
+
+  const visitsColl = db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("visits");
+
+  const existingVisits = await visitsColl
+    .where("customerId", "==", customerId)
+    .where("dateKey", "==", todayDateKey)
+    .limit(1)
+    .get();
+
+  if (!existingVisits.empty) {
+    return {
+      success: false,
+      status: "already_visited",
+      message: "Visit already recorded today for this customer.",
+      customerFirstName,
+      totalVisits: memData.totalVisits || 0,
+    };
+  }
+
+  // 5. Atomic Creation of Visit Document & Increment Total Visits
+  const visitId = `visit_${Date.now().toString(36)}_${crypto.randomBytes(4).toString("hex")}`;
+  const visitRef = visitsColl.doc(visitId);
+  const now = admin.firestore.FieldValue.serverTimestamp();
+
+  const batch = db.batch();
+
+  batch.set(visitRef, {
+    visitId,
+    businessId,
+    customerId,
+    cardId,
+    dateKey: todayDateKey,
+    verificationMethod: "merchant_pin",
+    recordedAt: now,
+  });
+
+  const updatedVisits = (memData.totalVisits || 0) + 1;
+
+  batch.update(memRef, {
+    totalVisits: admin.firestore.FieldValue.increment(1),
+    lastVisitAt: now,
+    updatedAt: now,
+  });
+
+  await batch.commit();
+
+  return {
+    success: true,
+    status: "visit_recorded",
+    message: "Visit recorded successfully!",
+    customerFirstName,
+    totalVisits: updatedVisits,
+  };
 });

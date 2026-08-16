@@ -32,6 +32,22 @@
         { "fieldPath": "businessId", "order": "ASCENDING" },
         { "fieldPath": "tierLevel", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "nfc_cards",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "visits",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "customerId", "order": "ASCENDING" },
+        { "fieldPath": "dateKey", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
