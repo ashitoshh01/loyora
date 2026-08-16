@@ -292,6 +292,251 @@ export const updateBusinessStatus = onCall(async (request) => {
 });
 
 /**
+ * Helper to validate caller role and get target businessId.
+ */
+function getCallerBusinessId(request: any, targetBusinessId?: string): string {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const role = request.auth.token.role;
+  if (role === "super_admin") {
+    if (!targetBusinessId) {
+      throw new HttpsError("invalid-argument", "businessId is required for super_admin.");
+    }
+    return targetBusinessId;
+  }
+  if (role === "business_admin") {
+    const callerBizId = request.auth.token.businessId;
+    if (!callerBizId) {
+      throw new HttpsError("permission-denied", "User custom claim is missing businessId.");
+    }
+    if (targetBusinessId && targetBusinessId !== callerBizId) {
+      throw new HttpsError("permission-denied", "Cannot access cards of another business.");
+    }
+    return callerBizId;
+  }
+  throw new HttpsError(
+    "permission-denied",
+    "Only business_admin or super_admin can manage NFC cards."
+  );
+}
+
+/**
+ * Cloud Function generateCardToken
+ * Creates a new NFCCard document with a random, non-sequential, opaque token (min 24 chars, crypto.randomBytes-based).
+ */
+export const generateCardToken = onCall(async (request) => {
+  const data = request.data || {};
+  const businessId = getCallerBusinessId(request, data.businessId);
+
+  // Opaque random token (32 hex characters = 16 random bytes)
+  const token = crypto.randomBytes(16).toString("hex");
+  const cardId = `card_${Date.now().toString(36)}_${crypto.randomBytes(4).toString("hex")}`;
+  const now = admin.firestore.FieldValue.serverTimestamp();
+
+  const cardRef = db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("nfc_cards")
+    .doc(cardId);
+
+  await cardRef.set({
+    cardId,
+    businessId,
+    token,
+    status: "unassigned",
+    customerId: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return {
+    success: true,
+    cardId,
+    token,
+    businessId,
+  };
+});
+
+/**
+ * Cloud Function assignCardToCustomer(cardId, customerId)
+ * Assigns an unassigned card to a customer, sets activation date/expiry date on membership, and updates membership status to active.
+ */
+export const assignCardToCustomer = onCall(async (request) => {
+  const data = request.data || {};
+  const { cardId, customerId } = data;
+  if (!cardId || typeof cardId !== "string") {
+    throw new HttpsError("invalid-argument", "cardId string is required.");
+  }
+  if (!customerId || typeof customerId !== "string") {
+    throw new HttpsError("invalid-argument", "customerId string is required.");
+  }
+
+  const businessId = getCallerBusinessId(request, data.businessId);
+
+  const cardRef = db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("nfc_cards")
+    .doc(cardId);
+
+  const cardSnap = await cardRef.get();
+  if (!cardSnap.exists) {
+    throw new HttpsError("not-found", `NFC Card ${cardId} not found.`);
+  }
+
+  const membershipRef = db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("memberships")
+    .doc(customerId);
+
+  const membershipSnap = await membershipRef.get();
+  if (!membershipSnap.exists) {
+    throw new HttpsError("not-found", `Membership for customer ${customerId} not found.`);
+  }
+
+  // Calculate default membership duration (1 year = 365 days from now)
+  const now = admin.firestore.Timestamp.now();
+  const oneYearMs = 365 * 24 * 60 * 60 * 1000;
+  const expiryDate = admin.firestore.Timestamp.fromMillis(now.toMillis() + oneYearMs);
+
+  const batch = db.batch();
+
+  // 1. Update Card status and customerId
+  batch.update(cardRef, {
+    customerId,
+    status: "active",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  // 2. Update Membership status, activationDate, and expiresAt
+  batch.update(membershipRef, {
+    status: "active",
+    activationDate: admin.firestore.FieldValue.serverTimestamp(),
+    expiresAt: expiryDate,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  await batch.commit();
+
+  return {
+    success: true,
+    cardId,
+    customerId,
+    businessId,
+  };
+});
+
+/**
+ * Cloud Function blockCard(cardId)
+ * Sets card status to blocked.
+ */
+export const blockCard = onCall(async (request) => {
+  const data = request.data || {};
+  const { cardId } = data;
+  if (!cardId || typeof cardId !== "string") {
+    throw new HttpsError("invalid-argument", "cardId string is required.");
+  }
+
+  const businessId = getCallerBusinessId(request, data.businessId);
+
+  const cardRef = db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("nfc_cards")
+    .doc(cardId);
+
+  const cardSnap = await cardRef.get();
+  if (!cardSnap.exists) {
+    throw new HttpsError("not-found", `NFC Card ${cardId} not found.`);
+  }
+
+  await cardRef.update({
+    status: "blocked",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return {
+    success: true,
+    cardId,
+    businessId,
+  };
+});
+
+/**
+ * Cloud Function replaceCard(oldCardId, customerId)
+ * Blocks old card, generates a NEW card+token, assigns it to the same customer,
+ * and MUST NOT touch customer visit history or loyalty level in any way.
+ */
+export const replaceCard = onCall(async (request) => {
+  const data = request.data || {};
+  const { oldCardId, customerId } = data;
+  if (!oldCardId || typeof oldCardId !== "string") {
+    throw new HttpsError("invalid-argument", "oldCardId string is required.");
+  }
+  if (!customerId || typeof customerId !== "string") {
+    throw new HttpsError("invalid-argument", "customerId string is required.");
+  }
+
+  const businessId = getCallerBusinessId(request, data.businessId);
+
+  const oldCardRef = db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("nfc_cards")
+    .doc(oldCardId);
+
+  const oldCardSnap = await oldCardRef.get();
+  if (!oldCardSnap.exists) {
+    throw new HttpsError("not-found", `Old NFC Card ${oldCardId} not found.`);
+  }
+
+  // Generate new card & opaque token (32 hex characters)
+  const newToken = crypto.randomBytes(16).toString("hex");
+  const newCardId = `card_${Date.now().toString(36)}_${crypto.randomBytes(4).toString("hex")}`;
+  const now = admin.firestore.FieldValue.serverTimestamp();
+
+  const newCardRef = db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("nfc_cards")
+    .doc(newCardId);
+
+  const batch = db.batch();
+
+  // 1. Block old card
+  batch.update(oldCardRef, {
+    status: "blocked",
+    updatedAt: now,
+  });
+
+  // 2. Create new active card assigned to customer
+  batch.set(newCardRef, {
+    cardId: newCardId,
+    businessId,
+    token: newToken,
+    status: "active",
+    customerId,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  // NOTE: Customer visit history and loyalty tier levels are strictly preserved/untouched.
+
+  await batch.commit();
+
+  return {
+    success: true,
+    oldCardId,
+    newCardId,
+    newToken,
+    customerId,
+    businessId,
+  };
+});
+
+/**
  * Placeholder Cloud Function for Flow B - Merchant PIN visit recording.
  */
 export const recordVisit = onCall(async (request) => {

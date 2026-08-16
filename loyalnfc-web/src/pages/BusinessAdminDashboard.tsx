@@ -5,9 +5,14 @@ import {
   deactivateCustomerMembership,
   type CustomerWithMembership,
 } from "../services/customerService";
+import {
+  subscribeToBusinessCards,
+  type NFCCardEntity,
+} from "../services/cardService";
 import { CreateCustomerModal } from "../components/business-admin/CreateCustomerModal";
 import { EditCustomerModal } from "../components/business-admin/EditCustomerModal";
 import { CustomerProfileModal } from "../components/business-admin/CustomerProfileModal";
+import { NfcCardInventoryModal } from "../components/business-admin/NfcCardInventoryModal";
 import {
   Store,
   LogOut,
@@ -18,6 +23,7 @@ import {
   Edit,
   Ban,
   Lock,
+  CreditCard,
 } from "lucide-react";
 
 
@@ -25,6 +31,7 @@ export const BusinessAdminDashboard: React.FC = () => {
   const { user, role, businessId, logout } = useAuth();
 
   const [customers, setCustomers] = useState<CustomerWithMembership[]>([]);
+  const [cards, setCards] = useState<NFCCardEntity[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -35,17 +42,25 @@ export const BusinessAdminDashboard: React.FC = () => {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [profileCustomer, setProfileCustomer] = useState<CustomerWithMembership | null>(null);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isCardModalOpen, setIsCardModalOpen] = useState(false);
 
-  // Subscribe to customers scoped strictly to businessId
+  // Subscribe to customers and NFC cards scoped strictly to businessId
   useEffect(() => {
     if (!businessId) return;
 
-    const unsubscribe = subscribeToBusinessCustomers(businessId, (list) => {
+    const unsubCust = subscribeToBusinessCustomers(businessId, (list) => {
       setCustomers(list);
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    const unsubCards = subscribeToBusinessCards(businessId, (cardList) => {
+      setCards(cardList);
+    });
+
+    return () => {
+      unsubCust();
+      unsubCards();
+    };
   }, [businessId]);
 
   const handleSoftDelete = async (cust: CustomerWithMembership) => {
@@ -164,13 +179,26 @@ export const BusinessAdminDashboard: React.FC = () => {
             </div>
           </div>
 
-          <button
-            onClick={() => setIsCreateModalOpen(true)}
-            className="py-2.5 px-5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-xl transition-all shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2"
-          >
-            <UserPlus className="w-4 h-4" />
-            <span>Register New Customer</span>
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setIsCardModalOpen(true)}
+              className="py-2.5 px-4 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-sm font-medium rounded-xl transition-all flex items-center gap-2"
+            >
+              <CreditCard className="w-4 h-4 text-indigo-400" />
+              <span>NFC Card Inventory</span>
+              <span className="px-1.5 py-0.5 bg-indigo-950 text-indigo-300 font-mono text-xs rounded border border-indigo-800">
+                {cards.filter((c) => c.status === "unassigned").length} unassigned
+              </span>
+            </button>
+
+            <button
+              onClick={() => setIsCreateModalOpen(true)}
+              className="py-2.5 px-5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-xl transition-all shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Register New Customer</span>
+            </button>
+          </div>
         </div>
 
         {/* Customer Table */}
@@ -355,6 +383,14 @@ export const BusinessAdminDashboard: React.FC = () => {
               setIsProfileModalOpen(false);
               setProfileCustomer(null);
             }}
+          />
+
+          <NfcCardInventoryModal
+            businessId={businessId}
+            isOpen={isCardModalOpen}
+            cards={cards}
+            customers={customers}
+            onClose={() => setIsCardModalOpen(false)}
           />
         </>
       )}

@@ -60,12 +60,9 @@ service cloud.firestore {
         allow write: if isSuperAdmin() || isBusinessAdmin(businessId);
       }
 
-      // NFC Cards
+      // NFC Cards (Decoupled & Opaque - Accessible only by Super Admin & Business Admin)
       match /nfc_cards/{cardId} {
-        allow read: if isSuperAdmin() ||
-                     isBusinessAdmin(businessId) ||
-                     (isCustomer(businessId) && resource.data.customerId == request.auth.uid);
-        allow write: if isSuperAdmin() || isBusinessAdmin(businessId);
+        allow read, write: if isSuperAdmin() || isBusinessAdmin(businessId);
       }
 
       // Loyalty Programs & Rules
