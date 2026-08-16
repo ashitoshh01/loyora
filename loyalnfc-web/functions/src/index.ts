@@ -1146,3 +1146,67 @@ export const getBusinessDashboardOverview = onCall(async (request) => {
     visitsChartData,
   };
 });
+
+/**
+ * Public Cloud Function: getPublicBusinessProfile(data: { businessSlug: string })
+ * Unauthenticated callable function for Phase 10 public QR microsite.
+ * Resolves business by slug or document ID and returns sanitized public profile info.
+ */
+export const getPublicBusinessProfile = onCall(async (request) => {
+  const slug = request.data?.businessSlug;
+  if (!slug || typeof slug !== "string") {
+    throw new HttpsError("invalid-argument", "businessSlug is required.");
+  }
+
+  const cleanSlug = slug.trim().toLowerCase();
+
+  // 1. Try finding business by slug field
+  const bizSnap = await db
+    .collection("businesses")
+    .where("slug", "==", cleanSlug)
+    .limit(1)
+    .get();
+
+  let bizDoc: admin.firestore.DocumentSnapshot | null = !bizSnap.empty ? bizSnap.docs[0] : null;
+
+  // 2. Fallback: try finding business by document ID
+  if (!bizDoc) {
+    const docSnap = await db.collection("businesses").doc(cleanSlug).get();
+    if (docSnap.exists) {
+      bizDoc = docSnap;
+    }
+  }
+
+  if (!bizDoc) {
+    throw new HttpsError("not-found", "Business profile not found.");
+  }
+
+  const data = bizDoc.data() || {};
+
+  return {
+    success: true,
+    businessId: bizDoc.id,
+    name: data.name || "Merchant Partner",
+    slug: data.slug || cleanSlug,
+    logoUrl: data.logoUrl || null,
+    description: data.description || "Welcome to our customer loyalty and mobile rewards hub!",
+    address: data.address || null,
+    phone: data.phone || data.contactPhone || null,
+    email: data.email || data.contactEmail || null,
+    websiteUrl: data.websiteUrl || data.website || null,
+    googleReviewUrl: data.googleReviewUrl || data.reviewUrl || null,
+    googleMapsUrl: data.googleMapsUrl || data.mapsUrl || null,
+    offers: data.offers || [
+      {
+        title: "Welcome Member Discount",
+        description: "Receive special perks when you tap your NFC loyalty pass in store!",
+        tag: "Special Perk",
+      },
+      {
+        title: "Exclusive Perks & Tier Upgrades",
+        description: "Earn discounts and rewards every time you visit.",
+        tag: "Loyalty Program",
+      },
+    ],
+  };
+});
