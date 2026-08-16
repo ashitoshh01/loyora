@@ -208,3 +208,61 @@ export async function reactivateCustomerMembership(
     updatedAt: serverTimestamp(),
   });
 }
+
+/**
+ * Subscribe to a single customer's profile document.
+ */
+export function subscribeToCustomerData(
+  businessId: string,
+  customerId: string,
+  callback: (customer: CustomerEntity | null) => void
+) {
+  const custRef = doc(db, "businesses", businessId, "customers", customerId);
+  return onSnapshot(custRef, (snapshot) => {
+    if (snapshot.exists()) {
+      callback({ customerId: snapshot.id, ...snapshot.data() } as CustomerEntity);
+    } else {
+      callback(null);
+    }
+  });
+}
+
+/**
+ * Subscribe to a single customer's membership document.
+ */
+export function subscribeToCustomerMembership(
+  businessId: string,
+  customerId: string,
+  callback: (membership: MembershipEntity | null) => void
+) {
+  const memRef = doc(db, "businesses", businessId, "memberships", customerId);
+  return onSnapshot(memRef, (snapshot) => {
+    if (snapshot.exists()) {
+      callback({ membershipId: snapshot.id, ...snapshot.data() } as MembershipEntity);
+    } else {
+      callback(null);
+    }
+  });
+}
+
+/**
+ * Subscribe to a customer's visit history (ordered by recordedAt desc).
+ */
+export function subscribeToCustomerVisits(
+  businessId: string,
+  customerId: string,
+  callback: (visits: any[]) => void
+) {
+  const visitsRef = collection(db, "businesses", businessId, "visits");
+  const q = query(
+    visitsRef,
+    orderBy("recordedAt", "desc")
+  );
+
+  return onSnapshot(q, (snapshot) => {
+    const visits = snapshot.docs
+      .map((d) => ({ visitId: d.id, ...d.data() }))
+      .filter((v: any) => v.customerId === customerId);
+    callback(visits);
+  });
+}
