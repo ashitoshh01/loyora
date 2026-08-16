@@ -2,6 +2,7 @@ import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getFunctions } from "firebase/functions";
+import { initializeAppCheck, ReCaptchaV3Provider } from "firebase/app-check";
 
 // Environment Variable driven Firebase Configuration
 const firebaseConfig = {
@@ -15,6 +16,18 @@ const firebaseConfig = {
 
 // Singleton App Instance Initialization
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+
+// Optional App Check Initialization (enforces legitimate client calls in production)
+if (typeof window !== "undefined" && import.meta.env.VITE_FIREBASE_APPCHECK_KEY) {
+  try {
+    initializeAppCheck(app, {
+      provider: new ReCaptchaV3Provider(import.meta.env.VITE_FIREBASE_APPCHECK_KEY),
+      isTokenAutoRefreshEnabled: true,
+    });
+  } catch (err) {
+    console.warn("App Check initialization skipped or already initialized:", err);
+  }
+}
 
 export const auth = getAuth(app);
 export const db = getFirestore(app);
