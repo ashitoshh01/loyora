@@ -76,6 +76,11 @@ service cloud.firestore {
         }
       }
 
+      match /loyalty_rules/{ruleId} {
+        allow read: if isSuperAdmin() || isBusinessAdmin(businessId) || isCustomer(businessId);
+        allow write: if isSuperAdmin() || isBusinessAdmin(businessId);
+      }
+
       // Visits (Immutable Visit Log)
       match /visits/{visitId} {
         allow read: if isSuperAdmin() ||

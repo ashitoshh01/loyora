@@ -161,20 +161,25 @@ export const CustomerProfileModal: React.FC<CustomerProfileModalProps> = ({
               Current Reward
             </span>
             <span className="font-semibold text-emerald-400 text-xs">
-              {mem?.currentReward || "None"}
+              {mem?.currentReward || "Standard Member Perks"}
             </span>
           </div>
 
           <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4">
             <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-1">
-              Pass Expiry
+              Next Milestone
             </span>
-            <span className="font-mono text-xs text-slate-300">
-              {mem?.status === "pending"
-                ? "Pending Card"
-                : mem?.expiresAt
-                ? formatDate(mem.expiresAt)
-                : "No Expiry"}
+            <span className="font-semibold text-indigo-300 text-xs">
+              {mem?.nextMilestone ? `${mem.nextMilestone} Visits (${mem?.nextReward || ""})` : "Top Tier Reached"}
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4">
+            <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-1">
+              Visits to Next Perk
+            </span>
+            <span className="font-bold text-amber-400 text-sm">
+              {mem?.nextMilestone ? `${mem.visitsRemaining ?? Math.max(0, mem.nextMilestone - (mem.totalVisits || 0))} remaining` : "0 (Max Level)"}
             </span>
           </div>
         </div>

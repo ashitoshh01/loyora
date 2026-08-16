@@ -9,10 +9,15 @@ import {
   subscribeToBusinessCards,
   type NFCCardEntity,
 } from "../services/cardService";
+import {
+  subscribeToBusinessLoyaltyRules,
+  type LoyaltyRuleEntity,
+} from "../services/loyaltyService";
 import { CreateCustomerModal } from "../components/business-admin/CreateCustomerModal";
 import { EditCustomerModal } from "../components/business-admin/EditCustomerModal";
 import { CustomerProfileModal } from "../components/business-admin/CustomerProfileModal";
 import { NfcCardInventoryModal } from "../components/business-admin/NfcCardInventoryModal";
+import { LoyaltyRulesModal } from "../components/business-admin/LoyaltyRulesModal";
 import {
   Store,
   LogOut,
@@ -24,6 +29,7 @@ import {
   Ban,
   Lock,
   CreditCard,
+  Award,
 } from "lucide-react";
 
 
@@ -32,6 +38,7 @@ export const BusinessAdminDashboard: React.FC = () => {
 
   const [customers, setCustomers] = useState<CustomerWithMembership[]>([]);
   const [cards, setCards] = useState<NFCCardEntity[]>([]);
+  const [loyaltyRules, setLoyaltyRules] = useState<LoyaltyRuleEntity[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -43,8 +50,9 @@ export const BusinessAdminDashboard: React.FC = () => {
   const [profileCustomer, setProfileCustomer] = useState<CustomerWithMembership | null>(null);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isCardModalOpen, setIsCardModalOpen] = useState(false);
+  const [isLoyaltyModalOpen, setIsLoyaltyModalOpen] = useState(false);
 
-  // Subscribe to customers and NFC cards scoped strictly to businessId
+  // Subscribe to customers, NFC cards, and Loyalty Rules scoped strictly to businessId
   useEffect(() => {
     if (!businessId) return;
 
@@ -57,9 +65,14 @@ export const BusinessAdminDashboard: React.FC = () => {
       setCards(cardList);
     });
 
+    const unsubRules = subscribeToBusinessLoyaltyRules(businessId, (rulesList) => {
+      setLoyaltyRules(rulesList);
+    });
+
     return () => {
       unsubCust();
       unsubCards();
+      unsubRules();
     };
   }, [businessId]);
 
@@ -179,7 +192,18 @@ export const BusinessAdminDashboard: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => setIsLoyaltyModalOpen(true)}
+              className="py-2.5 px-4 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 text-sm font-medium rounded-xl transition-all flex items-center gap-2"
+            >
+              <Award className="w-4 h-4 text-purple-400" />
+              <span>Loyalty Program Rules</span>
+              <span className="px-1.5 py-0.5 bg-purple-950 text-purple-300 font-mono text-xs rounded border border-purple-800">
+                {loyaltyRules.length} rules
+              </span>
+            </button>
+
             <button
               onClick={() => setIsCardModalOpen(true)}
               className="py-2.5 px-4 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-sm font-medium rounded-xl transition-all flex items-center gap-2"
@@ -391,6 +415,13 @@ export const BusinessAdminDashboard: React.FC = () => {
             cards={cards}
             customers={customers}
             onClose={() => setIsCardModalOpen(false)}
+          />
+
+          <LoyaltyRulesModal
+            businessId={businessId}
+            isOpen={isLoyaltyModalOpen}
+            rules={loyaltyRules}
+            onClose={() => setIsLoyaltyModalOpen(false)}
           />
         </>
       )}

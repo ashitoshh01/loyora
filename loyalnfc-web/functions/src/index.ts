@@ -720,6 +720,133 @@ export const resolveCardToken = onCall(async (request) => {
   };
 });
 
+interface LoyaltyRuleData {
+  ruleId: string;
+  minVisits: number;
+  maxVisits: number | null;
+  tierName: string;
+  rewardType: string;
+  rewardValue: string;
+  description: string;
+  order: number;
+}
+
+function computeLoyaltyStatusServer(
+  totalVisits: number,
+  rules: LoyaltyRuleData[]
+) {
+  if (!rules || rules.length === 0) {
+    return {
+      tierLevel: "Bronze",
+      currentReward: "Standard Member",
+      nextMilestone: null,
+      nextReward: "No higher tiers configured",
+      visitsRemaining: 0,
+    };
+  }
+
+  const sorted = [...rules].sort((a, b) => {
+    if (a.minVisits !== b.minVisits) return a.minVisits - b.minVisits;
+    return (a.order || 0) - (b.order || 0);
+  });
+
+  let activeRule: LoyaltyRuleData | null = null;
+  let nextRule: LoyaltyRuleData | null = null;
+
+  for (let i = 0; i < sorted.length; i++) {
+    const r = sorted[i];
+    if (totalVisits >= r.minVisits) {
+      activeRule = r;
+    } else {
+      nextRule = r;
+      break;
+    }
+  }
+
+  const formatReward = (r: LoyaltyRuleData | null): string => {
+    if (!r) return "None";
+    switch (r.rewardType) {
+      case "percentage_discount":
+        return `${r.rewardValue}% Off`;
+      case "fixed_amount_discount":
+        return `$${r.rewardValue} Discount`;
+      case "free_item":
+        return `Free ${r.rewardValue}`;
+      case "membership_upgrade":
+        return `Tier Upgrade: ${r.rewardValue}`;
+      case "custom_text":
+      default:
+        return r.rewardValue || r.description || "Perk Unlocked";
+    }
+  };
+
+  const tierLevel = activeRule ? activeRule.tierName : sorted[0].tierName || "Bronze";
+  const currentReward = activeRule
+    ? formatReward(activeRule)
+    : "Welcome Member (Complete first visit)";
+
+  const nextMilestone = nextRule ? nextRule.minVisits : null;
+  const nextReward = nextRule ? formatReward(nextRule) : "Top Tier Reached!";
+  const visitsRemaining = nextRule ? Math.max(0, nextRule.minVisits - totalVisits) : 0;
+
+  return {
+    tierLevel,
+    currentReward,
+    nextMilestone,
+    nextReward,
+    visitsRemaining,
+  };
+}
+
+/**
+ * Callable Cloud Function: computeLoyaltyStatus(data: { customerId: string, businessId?: string })
+ * Computes loyalty tier, current reward, next milestone, next reward, and visits remaining.
+ */
+export const computeLoyaltyStatus = onCall(async (request) => {
+  const data = request.data || {};
+  const { customerId } = data;
+  if (!customerId || typeof customerId !== "string") {
+    throw new HttpsError("invalid-argument", "customerId is required.");
+  }
+
+  const businessId = getCallerBusinessId(request, data.businessId);
+
+  const memSnap = await db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("memberships")
+    .doc(customerId)
+    .get();
+
+  if (!memSnap.exists) {
+    throw new HttpsError("not-found", "Membership not found.");
+  }
+
+  const memData = memSnap.data() || {};
+  const totalVisits = memData.totalVisits || 0;
+
+  const rulesSnap = await db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("loyalty_rules")
+    .get();
+
+  const rules: LoyaltyRuleData[] = rulesSnap.docs.map((d) => ({
+    ruleId: d.id,
+    ...d.data(),
+  })) as LoyaltyRuleData[];
+
+  const computed = computeLoyaltyStatusServer(totalVisits, rules);
+
+  return {
+    success: true,
+    customerId,
+    businessId,
+    totalVisits,
+    ...computed,
+  };
+});
+
 /**
  * Public Cloud Function: recordVisit(token, businessPin)
  * Server-side execution only:
@@ -861,10 +988,25 @@ export const recordVisit = onCall(async (request) => {
     };
   }
 
-  // 5. Atomic Creation of Visit Document & Increment Total Visits
+  // 5. Atomic Creation of Visit Document & Increment Total Visits + Recompute Loyalty Status
   const visitId = `visit_${Date.now().toString(36)}_${crypto.randomBytes(4).toString("hex")}`;
   const visitRef = visitsColl.doc(visitId);
   const now = admin.firestore.FieldValue.serverTimestamp();
+
+  // Fetch business loyalty rules
+  const rulesSnap = await db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("loyalty_rules")
+    .get();
+
+  const rules: LoyaltyRuleData[] = rulesSnap.docs.map((d) => ({
+    ruleId: d.id,
+    ...d.data(),
+  })) as LoyaltyRuleData[];
+
+  const updatedVisits = (memData.totalVisits || 0) + 1;
+  const computed = computeLoyaltyStatusServer(updatedVisits, rules);
 
   const batch = db.batch();
 
@@ -878,10 +1020,13 @@ export const recordVisit = onCall(async (request) => {
     recordedAt: now,
   });
 
-  const updatedVisits = (memData.totalVisits || 0) + 1;
-
   batch.update(memRef, {
     totalVisits: admin.firestore.FieldValue.increment(1),
+    tierLevel: computed.tierLevel,
+    currentReward: computed.currentReward,
+    nextMilestone: computed.nextMilestone,
+    nextReward: computed.nextReward,
+    visitsRemaining: computed.visitsRemaining,
     lastVisitAt: now,
     updatedAt: now,
   });
@@ -894,5 +1039,7 @@ export const recordVisit = onCall(async (request) => {
     message: "Visit recorded successfully!",
     customerFirstName,
     totalVisits: updatedVisits,
+    tierLevel: computed.tierLevel,
+    currentReward: computed.currentReward,
   };
 });

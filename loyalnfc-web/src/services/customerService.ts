@@ -31,6 +31,9 @@ export interface MembershipEntity {
   tierLevel: string;
   status: "active" | "paused" | "cancelled" | "pending";
   currentReward?: string | null;
+  nextMilestone?: number | null;
+  nextReward?: string | null;
+  visitsRemaining?: number | null;
   expiresAt?: Timestamp | any | null;
   joinedAt: Timestamp | any;
   lastVisitAt: Timestamp | any | null;
