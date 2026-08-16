@@ -18,6 +18,7 @@ import { EditCustomerModal } from "../components/business-admin/EditCustomerModa
 import { CustomerProfileModal } from "../components/business-admin/CustomerProfileModal";
 import { NfcCardInventoryModal } from "../components/business-admin/NfcCardInventoryModal";
 import { LoyaltyRulesModal } from "../components/business-admin/LoyaltyRulesModal";
+import { BusinessOverviewView } from "../components/business-admin/BusinessOverviewView";
 import {
   Store,
   LogOut,
@@ -30,11 +31,15 @@ import {
   Lock,
   CreditCard,
   Award,
+  LayoutDashboard,
+  Users as UsersIcon,
 } from "lucide-react";
 
 
 export const BusinessAdminDashboard: React.FC = () => {
   const { user, role, businessId, logout } = useAuth();
+
+  const [activeTab, setActiveTab] = useState<"overview" | "customers">("overview");
 
   const [customers, setCustomers] = useState<CustomerWithMembership[]>([]);
   const [cards, setCards] = useState<NFCCardEntity[]>([]);
@@ -144,6 +149,55 @@ export const BusinessAdminDashboard: React.FC = () => {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-6">
+        {/* Navigation Tabs Bar */}
+        <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setActiveTab("overview")}
+              className={`py-2.5 px-5 rounded-xl text-sm font-semibold transition-all flex items-center gap-2 ${
+                activeTab === "overview"
+                  ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20"
+                  : "bg-slate-900 text-slate-400 hover:text-white border border-slate-800"
+              }`}
+            >
+              <LayoutDashboard className="w-4 h-4" />
+              <span>Dashboard Overview</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab("customers")}
+              className={`py-2.5 px-5 rounded-xl text-sm font-semibold transition-all flex items-center gap-2 ${
+                activeTab === "customers"
+                  ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20"
+                  : "bg-slate-900 text-slate-400 hover:text-white border border-slate-800"
+              }`}
+            >
+              <UsersIcon className="w-4 h-4" />
+              <span>Customer Directory</span>
+              <span className="px-1.5 py-0.5 bg-slate-950 text-slate-300 font-mono text-xs rounded border border-slate-800">
+                {customers.length}
+              </span>
+            </button>
+          </div>
+
+          <div className="hidden sm:flex items-center gap-2">
+            <button
+              onClick={() => setIsLoyaltyModalOpen(true)}
+              className="py-2.5 px-4 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 text-xs font-medium rounded-xl transition-all flex items-center gap-2"
+            >
+              <Award className="w-4 h-4 text-purple-400" />
+              <span>Loyalty Rules</span>
+            </button>
+            <button
+              onClick={() => setIsCardModalOpen(true)}
+              className="py-2.5 px-4 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-medium rounded-xl transition-all flex items-center gap-2"
+            >
+              <CreditCard className="w-4 h-4 text-indigo-400" />
+              <span>NFC Cards</span>
+            </button>
+          </div>
+        </div>
+
         {/* Security Scoping Banner */}
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex items-center justify-between text-xs">
           <div className="flex items-center gap-3">
@@ -151,16 +205,30 @@ export const BusinessAdminDashboard: React.FC = () => {
               <Lock className="w-4 h-4" />
             </div>
             <span>
-              Customer directory strictly scoped to tenant ID:{" "}
+              Tenant Data Scoped strictly to ID:{" "}
               <code className="text-indigo-300 bg-indigo-950/80 px-2 py-0.5 rounded font-mono border border-indigo-800/40">
                 {businessId}
               </code>
             </span>
           </div>
-          <span className="text-slate-400">
-            Total Members: <strong className="text-white">{customers.length}</strong>
-          </span>
         </div>
+
+        {/* TAB 1: OVERVIEW */}
+        {activeTab === "overview" && businessId && (
+          <BusinessOverviewView
+            businessId={businessId}
+            onOpenCreateCustomer={() => {
+              setActiveTab("customers");
+              setIsCreateModalOpen(true);
+            }}
+            onOpenCards={() => setIsCardModalOpen(true)}
+            onOpenLoyaltyRules={() => setIsLoyaltyModalOpen(true)}
+          />
+        )}
+
+        {/* TAB 2: CUSTOMER DIRECTORY */}
+        {activeTab === "customers" && (
+          <>
 
         {/* Toolbar: Search, Filter & Create */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
@@ -376,6 +444,8 @@ export const BusinessAdminDashboard: React.FC = () => {
             </div>
           )}
         </div>
+        </>
+        )}
       </main>
 
       {/* Modals */}

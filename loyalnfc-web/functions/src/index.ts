@@ -1043,3 +1043,106 @@ export const recordVisit = onCall(async (request) => {
     currentReward: computed.currentReward,
   };
 });
+
+/**
+ * Callable Cloud Function: getBusinessDashboardOverview(data: { businessId?: string })
+ * Uses Firestore aggregation count() queries to compute overview metrics:
+ * - totalCustomers
+ * - activeMembers
+ * - visitsToday
+ * - visitsThisMonth
+ * - activeCards
+ * - blockedCards
+ * - expiringMemberships (next 30 days)
+ * - visitsChartData (daily visit count for last 30 days)
+ */
+export const getBusinessDashboardOverview = onCall(async (request) => {
+  const data = request.data || {};
+  const businessId = getCallerBusinessId(request, data.businessId);
+
+  const bizSnap = await db.collection("businesses").doc(businessId).get();
+  if (!bizSnap.exists) {
+    throw new HttpsError("not-found", "Business record not found.");
+  }
+  const bizData = bizSnap.data() || {};
+  const timezone = bizData.timezone || "Asia/Kolkata";
+
+  const now = new Date();
+  const todayDateKey = getTodayDateKey(timezone);
+
+  const yearMonth = todayDateKey.substring(0, 7);
+  const monthStartDateKey = `${yearMonth}-01`;
+
+  const thirtyDaysAgoDate = new Date();
+  thirtyDaysAgoDate.setDate(now.getDate() - 30);
+  const thirtyDaysAgoDateKey = thirtyDaysAgoDate.toISOString().substring(0, 10);
+
+  const thirtyDaysFuture = new Date();
+  thirtyDaysFuture.setDate(now.getDate() + 30);
+
+  // Run aggregation count() queries in parallel for scalability
+  const [
+    totalCustomersSnap,
+    activeMembersSnap,
+    visitsTodaySnap,
+    visitsMonthSnap,
+    activeCardsSnap,
+    blockedCardsSnap,
+    expiringMembershipsSnap,
+  ] = await Promise.all([
+    db.collection("businesses").doc(businessId).collection("customers").count().get(),
+    db.collection("businesses").doc(businessId).collection("memberships").where("status", "==", "active").count().get(),
+    db.collection("businesses").doc(businessId).collection("visits").where("dateKey", "==", todayDateKey).count().get(),
+    db.collection("businesses").doc(businessId).collection("visits").where("dateKey", ">=", monthStartDateKey).count().get(),
+    db.collection("businesses").doc(businessId).collection("nfc_cards").where("status", "==", "active").count().get(),
+    db.collection("businesses").doc(businessId).collection("nfc_cards").where("status", "==", "blocked").count().get(),
+    db.collection("businesses").doc(businessId).collection("memberships").where("status", "==", "active").where("expiresAt", ">=", now).where("expiresAt", "<=", thirtyDaysFuture).count().get(),
+  ]);
+
+  // Query visits in last 30 days for daily chart
+  const recentVisitsSnap = await db
+    .collection("businesses")
+    .doc(businessId)
+    .collection("visits")
+    .where("dateKey", ">=", thirtyDaysAgoDateKey)
+    .select("dateKey")
+    .get();
+
+  const visitCountsByDate: Record<string, number> = {};
+  recentVisitsSnap.docs.forEach((doc) => {
+    const dk = doc.data().dateKey;
+    if (dk) {
+      visitCountsByDate[dk] = (visitCountsByDate[dk] || 0) + 1;
+    }
+  });
+
+  const visitsChartData: { dateKey: string; label: string; count: number }[] = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(now.getDate() - i);
+    const dk = d.toISOString().substring(0, 10);
+    const label = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    visitsChartData.push({
+      dateKey: dk,
+      label,
+      count: visitCountsByDate[dk] || 0,
+    });
+  }
+
+  return {
+    success: true,
+    businessId,
+    businessName: bizData.name || "Business",
+    timezone,
+    metrics: {
+      totalCustomers: totalCustomersSnap.data().count,
+      activeMembers: activeMembersSnap.data().count,
+      visitsToday: visitsTodaySnap.data().count,
+      visitsThisMonth: visitsMonthSnap.data().count,
+      activeCards: activeCardsSnap.data().count,
+      blockedCards: blockedCardsSnap.data().count,
+      expiringMemberships: expiringMembershipsSnap.data().count,
+    },
+    visitsChartData,
+  };
+});
